@@ -63,7 +63,7 @@ struct game_info {
         int active;
         int online;
         int player_amount;
-        char wait_players;
+        int wait_players;
 };
 
 struct session {

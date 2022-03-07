@@ -69,9 +69,9 @@ void clear_requests(struct session *ptr)
 void greet_player(struct session *ptr)
 {
         char buf[128];
-        send_string(ptr, "Welcome to Game Server!\n");
-        send_string(ptr, "Your game ID:\n");
-        sprintf(buf, "%%     %d\n\n", ptr->game_id);
+        send_string(ptr, "# Welcome to Game Server!\n");
+        send_string(ptr, "# Your game ID:\n");
+        sprintf(buf, "%%%8d\n\n", ptr->game_id);
         send_string(ptr, buf);
 }
 
@@ -161,64 +161,66 @@ void parse_request(const char *str, struct game_request *req)
 void game_not_started(struct session *ptr, const struct game_info *bank)
 {
         char buf[128];
-        sprintf(buf, "%d/%d have already connected\n",
+        sprintf(buf, "# %d/%d have already connected\n",
                 bank->online, bank->player_amount);
         send_string(ptr, buf);
-        send_string(ptr, "Waiting for players...\n\n");
+        send_string(ptr, "# Waiting for players...\n\n");
 }
 
-int check_request(struct session *ptr, const struct game_request *req)
+void check_request(struct session *ptr, struct game_request *req)
 {
-        const char *help = "Type 'help' to get information\n\n";
-        if (req->cmd == cmd_error) {
-                send_string(ptr, "Unknown command\n");
-                send_string(ptr, help);
-                return 1;
-        }
-        if (req->cmd == cmd_prod || req->cmd == cmd_build) {
+        switch (req->cmd) {
+        case cmd_prod:
+        case cmd_build:
                 if (req->argv[0] <= 0) {
-                        send_string(ptr, "You must give a number\n");
-                        send_string(ptr, help);
-                        return 1;
+                        send_string(ptr, "& You must give a number\n");
+                        req->cmd = cmd_error;
                 }
-        }
-        if (req->cmd == cmd_sell || req->cmd == cmd_buy) {
+                break;
+        case cmd_sell:
+        case cmd_buy:
                 if (req->argv[0] <= 0 || req->argv[1] <= 0) {
-                        send_string(ptr, "You must give two numbers\n");
-                        send_string(ptr, help);
-                        return 1;
+                        send_string(ptr, "& You must give two numbers\n");
+                        req->cmd = cmd_error;
                 }
+                break;
+        case cmd_error:
+                send_string(ptr, "& Unknown command\n");
+        default:
+                ;
         }
-        if (req->cmd == cmd_sell || req->cmd == cmd_buy ||
-            req->cmd == cmd_prod || req->cmd == cmd_build ||
-            req->cmd == cmd_cancel || req->cmd == cmd_turn ||
-            req->cmd == cmd_view) {
-                if (ptr->flag == st_endturn && req->cmd != cmd_view) {
-                        send_string(ptr, "This command is unavailable now\n\n");
-                        return 1;
-                }
-                if (ptr->flag == st_gameover) {
-                        send_string(ptr, "Sorry, the game is over for you\n\n");
-                        return 1;
-                }
+        if (req->cmd == cmd_error) {
+                send_string(ptr, "# Type 'help' to get information\n\n");
+                return;
         }
-        return 0;
+        if (ptr->flag == st_endturn && req->cmd != cmd_view &&
+            req->cmd != cmd_empty && req->cmd != cmd_market &&
+            req->cmd != cmd_info && req->cmd != cmd_help) {
+                send_string(ptr, "& This command is unavailable now\n\n");
+                req->cmd = cmd_error;
+        }
+        if (ptr->flag == st_gameover &&
+            req->cmd != cmd_empty && req->cmd != cmd_market &&
+            req->cmd != cmd_info && req->cmd == cmd_help) {
+                send_string(ptr, "& Sorry, the game is over for you\n\n");
+                req->cmd = cmd_error;
+        }
 }
 
 void do_market(struct session *ptr, const struct game_info *bank)
 {
         char buf[128];
-        sprintf(buf, "Current month is %dth\n", bank->month);
+        sprintf(buf, "# Current month is %dth\n", bank->month);
         send_string(ptr, buf);
-        send_string(ptr, "Players still active:\n");
-        sprintf(buf, "%%            %d\n", bank->active);
+        send_string(ptr, "# Players still active:\n");
+        sprintf(buf, "%%              %d\n", bank->active);
         send_string(ptr, buf);
-        send_string(ptr, "Bank sells:  items  min.price\n");
-        sprintf(buf, "%%            %-5d  %d\n",
+        send_string(ptr, "# Bank sells:  items  min.price\n");
+        sprintf(buf, "%%              %-5d  %d\n",
                 bank->raw_units, bank->min_price);
         send_string(ptr, buf);
-        send_string(ptr, "Bank buys:   items  max.price\n");
-        sprintf(buf, "%%            %-5d  %d\n",
+        send_string(ptr, "# Bank buys:   items  max.price\n");
+        sprintf(buf, "%%              %-5d  %d\n",
                 bank->prod_units, bank->max_price);
         send_string(ptr, buf);
         send_string(ptr, "\n");
@@ -244,91 +246,91 @@ void do_sell(struct session *ptr, const struct game_request *req,
              const struct game_info *bank)
 {
         if (req->argv[0] > bank->prod_units) {
-                send_string(ptr, "Bank buys fewer prod units\n\n");
+                send_string(ptr, "& Bank buys fewer prod units\n\n");
                 return;
         }
         if (req->argv[1] > bank->max_price) {
-                send_string(ptr, "Your price is too high\n\n");
+                send_string(ptr, "& Your price is too high\n\n");
                 return;
         }
         if (req->argv[0] > ptr->prod) {
-                send_string(ptr, "You don't have enough prod units\n\n");
+                send_string(ptr, "& You don't have enough prod units\n\n");
                 return;
         }
         ptr->sell_count = req->argv[0];
         ptr->sell_price = req->argv[1];
-        send_string(ptr, "Your request is accepted\n\n");
+        send_string(ptr, "& Your request is accepted\n\n");
 }
 
 void do_buy(struct session *ptr, const struct game_request *req,
             const struct game_info *bank)
 {
         if (req->argv[0] > bank->raw_units) {
-                send_string(ptr, "Bank sells fewer raw units\n\n");
+                send_string(ptr, "& Bank sells fewer raw units\n\n");
                 return;
         }
         if (req->argv[1] < bank->min_price) {
-                send_string(ptr, "Your price is too low\n\n");
+                send_string(ptr, "& Your price is too low\n\n");
                 return;
         }
         ptr->buy_count = req->argv[0];
         ptr->buy_price = req->argv[1];
-        send_string(ptr, "Your request is accepted\n\n");
+        send_string(ptr, "& Your request is accepted\n\n");
 }
 
 void do_prod(struct session *ptr, const struct game_request *req)
 {
         if (ptr->raw - ptr->produce < req->argv[0]) {
-                send_string(ptr, "You don't have enough raw units\n\n");
+                send_string(ptr, "& You don't have enough raw units\n\n");
                 return;
         }
         if (ptr->plants - ptr->produce < req->argv[0]) {
-                send_string(ptr, "You don't have enough plants\n\n");
+                send_string(ptr, "& You don't have enough plants\n\n");
                 return;
         }
         ptr->produce += req->argv[0];
-        send_string(ptr, "Your request is accepted\n\n");
+        send_string(ptr, "& Your request is accepted\n\n");
 }
 
 void do_build(struct session *ptr, const struct game_request *req)
 {
         char buf[128];
-        int price = req->argv[0] * plant_price / 2;
-        if (ptr->money >= price) {
-                ptr->money -= price;
+        int cost = req->argv[0] * plant_price / 2;
+        if (ptr->money >= cost) {
+                ptr->money -= cost;
                 ptr->build[month_plant_build - 1] += req->argv[0];
-                sprintf(buf, "Construction started! Payment: $%d\n", price);
+                sprintf(buf, "& Construction started! Payment: $%d\n", cost);
                 send_string(ptr, buf);
-                sprintf(buf, "Your balance is $%d\n\n", ptr->money);
+                sprintf(buf, "# Your balance is $%d\n\n", ptr->money);
                 send_string(ptr, buf);
         } else {
-                send_string(ptr, "You don't have enough money\n\n");
+                send_string(ptr, "& You don't have enough money\n\n");
         }
 }
 
 void do_cancel(struct session *ptr)
 {
         clear_requests(ptr);
-        send_string(ptr, "All your requests have been canceled\n\n");
+        send_string(ptr, "& All your requests have been canceled\n\n");
 }
 
 void do_turn(struct session *ptr)
 {
         ptr->flag = st_endturn;
-        send_string(ptr, "Now only info-commands are available\n\n");
+        send_string(ptr, "& Now only info-commands are available\n\n");
 }
 
 void do_view(struct session *ptr)
 {
         char buf[128];
-        sprintf(buf, "Your game ID: %d\n", ptr->game_id);
+        sprintf(buf, "# Your game ID: %d\n", ptr->game_id);
         send_string(ptr, buf);
-        sprintf(buf, "Your balance is $%d\n", ptr->money);
+        sprintf(buf, "# Your balance is $%d\n", ptr->money);
         send_string(ptr, buf);
-        sprintf(buf, "You have %d prod units, %d raw units, %d plants\n",
+        sprintf(buf, "# You have %d prod units, %d raw units, %d plants\n",
                 ptr->prod, ptr->raw, ptr->plants);
         send_string(ptr, buf);
-        sprintf(buf, "Requested: sell %d for $%d, buy %d for $%d, produce %d",
+        sprintf(buf, "# Requested: sell %d for $%d, buy %d for $%d, produce %d",
                 ptr->sell_count, ptr->sell_price,
                 ptr->buy_count, ptr->buy_price, ptr->produce);
         send_string(ptr, buf);
@@ -338,7 +340,7 @@ void do_view(struct session *ptr)
 void do_help(struct session *ptr)
 {
         send_string(ptr,
-                "Use commands:\n"
+                "# Use commands:\n"
                 "# market   - to get the current market status\n"
                 "# info     - to get information about players\n"
                 "# sell     - to place production sell request\n"
@@ -351,7 +353,7 @@ void do_help(struct session *ptr)
                 "# help     - to get this help\n\n"
         );
         send_string(ptr,
-                "Rules of the Game:\n"
+                "# Rules of the Game:\n"
                 "# Free plant + raw unit + $2000 -> prod unit\n"
                 "# Plant can be build in 5 month for $2500+$2500\n"
                 "# Monthly expenses are $1000 per plant,\n"
@@ -368,8 +370,7 @@ void execute_command(const char *str, struct session *ptr,
                 return;
         }
         parse_request(str, &req);
-        if (check_request(ptr, &req))
-                return;
+        check_request(ptr, &req);
         switch (req.cmd) {
         case cmd_market:
                 do_market(ptr, bank);
@@ -576,11 +577,11 @@ void auction(struct session *sess, const struct game_info *bank)
 void build_plants(struct session *ptr)
 {
         char buf[128];
-        int i, price = ptr->build[0] * plant_price / 2;
+        int i, cost = ptr->build[0] * plant_price / 2;
         if (ptr->build[0]) {
-                ptr->money -= price;
+                ptr->money -= cost;
                 ptr->plants += ptr->build[0];
-                sprintf(buf, "Construction completed! Payment: $%d\n", price);
+                sprintf(buf, "# Construction completed! Payment: $%d\n", cost);
                 send_string(ptr, buf);
         }
         for (i = 0; i < month_plant_build - 1; i++)
@@ -593,28 +594,28 @@ void commit_transactions(struct session *ptr)
         char buf[128];
         ptr->money -= ptr->produce * manufacture_price;
         ptr->raw -= ptr->produce;
-        sprintf(buf, "You've created %d prod units for $%d\n",
+        sprintf(buf, "# You've created %d prod units for $%d\n",
                 ptr->produce, ptr->produce * manufacture_price);
         send_string(ptr, buf);
         ptr->money += ptr->sold * ptr->sell_price;
         ptr->prod -= ptr->sold;
         ptr->money -= ptr->prod * prod_storage_price;
-        sprintf(buf, "You've payed $%d for storing %d prod units\n",
+        sprintf(buf, "# You've payed $%d for storing %d prod units\n",
                 ptr->prod * prod_storage_price, ptr->prod);
         send_string(ptr, buf);
         ptr->money -= ptr->raw * raw_storage_price;
-        sprintf(buf, "You've payed $%d for storing %d raw units\n",
+        sprintf(buf, "# You've payed $%d for storing %d raw units\n",
                 ptr->raw * raw_storage_price, ptr->raw);
         send_string(ptr, buf);
         ptr->money -= ptr->bought * ptr->buy_price;
         ptr->raw += ptr->bought;
         ptr->prod += ptr->produce;
         ptr->money -= ptr->plants * maintain_plant_price;
-        sprintf(buf, "You've payed $%d for maintaining plants\n",
+        sprintf(buf, "# You've payed $%d for maintaining plants\n",
                 ptr->plants * maintain_plant_price);
         send_string(ptr, buf);
         build_plants(ptr);
-        sprintf(buf, "Your balance is $%d\n\n", ptr->money);
+        sprintf(buf, "# Your balance is $%d\n\n", ptr->money);
         send_string(ptr, buf);
 }
 
@@ -627,11 +628,11 @@ void search_winner(struct session *sess)
                         break;
         }
         if (winner) {
-                send_string(winner, "Congratulations!!! You win!\n\n");
-                sprintf(buf, "Player #%d wins the game!\n\n", winner->game_id);
+                send_string(winner, "$ Congratulations!!! You win!\n");
+                sprintf(buf, "$ Player #%d wins the game!\n", winner->game_id);
                 broadcast_message_except(sess, winner, buf);
         } else {
-                broadcast_message(sess, "All players went bankrupt...\n\n");
+                broadcast_message(sess, "$ All players went bankrupt...\n");
         }
 }
 
@@ -645,8 +646,8 @@ int search_bankrupts(struct session *sess)
                         continue;
                 tmp->flag = st_gameover;
                 bankrupts++;
-                send_string(tmp, "You went bankrupt!\n\n");
-                sprintf(buf, "Player #%d went bankrupt!\n\n", tmp->game_id);
+                send_string(tmp, "$ You went bankrupt!\n");
+                sprintf(buf, "$ Player #%d went bankrupt!\n", tmp->game_id);
                 broadcast_message_except(sess, tmp, buf);
         }
         return bankrupts;
@@ -709,9 +710,8 @@ int is_thinking(struct session *sess)
 void notify_game_started(struct session *sess)
 {
         broadcast_message(sess,
-                "Game started, now you can play\n"
-                "Have a nice game, good luck!\n"
-                "Type 'help' to get information\n\n"
+                "# The game has started, now you can play\n"
+                "# Type 'help' to get information\n\n"
         );
 }
 
