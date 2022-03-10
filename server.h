@@ -2,9 +2,12 @@
 #define SERVER_H_SENTRY
 
 #define INBUFSIZE 1024
-#define EXECUTION 0
-#define INTERRUPT 1
-#define RELOADING 2
+
+enum signal_events {
+        sigev_no_events = 0,
+        sigev_terminate = 1,
+        sigev_restart   = 2
+};
 
 enum game_constants {
         first_market_level   = 3,

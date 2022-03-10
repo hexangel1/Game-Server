@@ -13,19 +13,19 @@
 #include <time.h>
 #include "server.h"
 
-volatile sig_atomic_t server_state = EXECUTION;
+volatile sig_atomic_t sig_event_flag = sigev_no_events;
 
 void signal_handler(int signum)
 {
         if (signum == SIGTERM || signum == SIGUSR1)
-                server_state = INTERRUPT;
+                sig_event_flag = sigev_terminate;
         else if (signum == SIGUSR2)
-                server_state = RELOADING;
+                sig_event_flag = sigev_restart;
 }
 
-void send_string(struct session *ptr, const char *msg)
+void send_string(struct session *ptr, const char *str)
 {
-        write(ptr->socket_d, msg, strlen(msg));
+        write(ptr->socket_d, str, strlen(str));
 }
 
 void broadcast_message(struct session *sess, const char *msg)
@@ -71,7 +71,7 @@ void greet_player(struct session *ptr)
         char buf[128];
         send_string(ptr, "# Welcome to Game Server!\n");
         send_string(ptr, "# Your game ID:\n");
-        sprintf(buf, "%%%8d\n\n", ptr->game_id);
+        sprintf(buf, "%% %7d\n\n", ptr->game_id);
         send_string(ptr, buf);
 }
 
@@ -148,16 +148,6 @@ enum game_command get_command(const char *str)
         return cmd_error;
 }
 
-void parse_request(const char *str, struct game_request *req)
-{
-        char buf[16];
-        int res;
-        req->argv[0] = 0;
-        req->argv[1] = 0;
-        res = sscanf(str, "%15s %d %d", buf, req->argv, req->argv + 1);
-        req->cmd = res >= 1 ? get_command(buf) : cmd_empty;
-}
-
 void game_not_started(struct session *ptr, const struct game_info *bank)
 {
         char buf[128];
@@ -165,6 +155,16 @@ void game_not_started(struct session *ptr, const struct game_info *bank)
                 bank->online, bank->player_amount);
         send_string(ptr, buf);
         send_string(ptr, "# Waiting for players...\n\n");
+}
+
+void parse_request(const char *str, struct game_request *req)
+{
+        char buf[16];
+        int res;
+        req->argv[0] = 0;
+        req->argv[1] = 0;
+        res = sscanf(str, "%15s %d %d", buf, &req->argv[0], &req->argv[1]);
+        req->cmd = res >= 1 ? get_command(buf) : cmd_empty;
 }
 
 void check_request(struct session *ptr, struct game_request *req)
@@ -229,10 +229,10 @@ void do_market(struct session *ptr, const struct game_info *bank)
 void do_info(struct session *ptr, struct session *sess)
 {
         char buf[128];
-        send_string(ptr, "# Player  Money   Raw  Prod  Plants\n");
+        send_string(ptr, "# Player   Money   Raw   Prod   Plants\n");
         while (sess) {
                 if (sess->flag == st_thinking || sess->flag == st_endturn) {
-                        sprintf(buf, "%% %-6d  %-5d   %-3d  %-4d  %d\n",
+                        sprintf(buf, "%% %-6d   %-5d   %-3d   %-4d   %d\n",
                                 sess->game_id, sess->money, sess->raw,
                                 sess->prod, sess->plants);
                         send_string(ptr, buf);
@@ -449,7 +449,7 @@ void read_data(struct session *ptr, struct session *sess,
         ptr->buf_used += rc;
         check_lf(ptr, sess, bank);
         if (ptr->buf_used >= INBUFSIZE) {
-                send_string(ptr, "String too long...\n\n");
+                send_string(ptr, "# String too long...\n\n");
                 ptr->buf_used = 0;
         }
 }
@@ -543,11 +543,11 @@ void send_results(struct session *sess)
 {
         char buf[128];
         struct session *tmp;
-        broadcast_message(sess, "# Player  Sold  Price  Bought  Price\n");
+        broadcast_message(sess, "# Player   Sold   Price   Bought   Price\n");
         for (tmp = sess; tmp; tmp = tmp->next) {
                 if (tmp->flag == st_gameover)
                         continue;
-                sprintf(buf, "%% %-6d  %-4d  %-5d  %-6d  %d\n",
+                sprintf(buf, "%% %-6d   %-4d   %-5d   %-6d   %d\n",
                         tmp->game_id, tmp->sold, tmp->sell_price,
                         tmp->bought, tmp->buy_price);
                 broadcast_message(sess, buf);
@@ -589,7 +589,8 @@ void build_plants(struct session *ptr)
         ptr->build[month_plant_build - 1] = 0;
 }
 
-void commit_transactions(struct session *ptr)
+void commit_transactions(struct session *ptr, struct session *sess,
+                         struct game_info *bank)
 {
         char buf[128];
         ptr->money -= ptr->produce * manufacture_price;
@@ -617,6 +618,13 @@ void commit_transactions(struct session *ptr)
         build_plants(ptr);
         sprintf(buf, "# Your balance is $%d\n\n", ptr->money);
         send_string(ptr, buf);
+        if (ptr->money < 0) {
+                ptr->flag = st_gameover;
+                bank->active--;
+                send_string(ptr, "$ You went bankrupt!\n\n");
+                sprintf(buf, "$ Player #%d went bankrupt!\n\n", ptr->game_id);
+                broadcast_message_except(sess, ptr, buf);
+        }
 }
 
 void search_winner(struct session *sess)
@@ -636,38 +644,6 @@ void search_winner(struct session *sess)
         }
 }
 
-int search_bankrupts(struct session *sess)
-{
-        char buf[128];
-        struct session *tmp;
-        int bankrupts = 0;
-        for (tmp = sess; tmp; tmp = tmp->next) {
-                if (tmp->money >= 0 || tmp->flag == st_gameover)
-                        continue;
-                tmp->flag = st_gameover;
-                bankrupts++;
-                send_string(tmp, "$ You went bankrupt!\n");
-                sprintf(buf, "$ Player #%d went bankrupt!\n", tmp->game_id);
-                broadcast_message_except(sess, tmp, buf);
-        }
-        return bankrupts;
-}
-
-void market_conditions(struct game_info *bank)
-{
-        static const int parameters[5][4] = {
-                { 2, 6, 800, 6500 },
-                { 3, 5, 650, 6000 },
-                { 4, 4, 500, 5500 },
-                { 5, 3, 400, 5000 },
-                { 6, 2, 300, 4500 }
-        };
-        bank->raw_units = parameters[bank->level - 1][0] * bank->active / 2;
-        bank->prod_units = parameters[bank->level - 1][1] * bank->active / 2;
-        bank->min_price = parameters[bank->level - 1][2];
-        bank->max_price = parameters[bank->level - 1][3];
-}
-
 int change_level(int level)
 {
         static const int distribution[5][5] = {
@@ -684,6 +660,21 @@ int change_level(int level)
                 new_level++;
         }
         return new_level;
+}
+
+void market_conditions(struct game_info *bank)
+{
+        static const int parameters[5][4] = {
+                { 2, 6, 800, 6500 },
+                { 3, 5, 650, 6000 },
+                { 4, 4, 500, 5500 },
+                { 5, 3, 400, 5000 },
+                { 6, 2, 300, 4500 }
+        };
+        bank->raw_units = parameters[bank->level - 1][0] * bank->active / 2;
+        bank->prod_units = parameters[bank->level - 1][1] * bank->active / 2;
+        bank->min_price = parameters[bank->level - 1][2];
+        bank->max_price = parameters[bank->level - 1][3];
 }
 
 void init_game(struct game_info *bank, int count)
@@ -710,7 +701,7 @@ int is_thinking(struct session *sess)
 void notify_game_started(struct session *sess)
 {
         broadcast_message(sess,
-                "# The game has started, now you can play\n"
+                "# The game has started!\n"
                 "# Type 'help' to get information\n\n"
         );
 }
@@ -741,9 +732,8 @@ void game_process(struct session **sess, struct game_info *bank)
         auction(*sess, bank);
         for (tmp = *sess; tmp; tmp = tmp->next) {
                 if (tmp->flag != st_gameover)
-                        commit_transactions(tmp);
+                        commit_transactions(tmp, *sess, bank);
         }
-        bank->active -= search_bankrupts(*sess);
         if (bank->active > 1) {
                 next_month(*sess);
                 bank->month++;
@@ -811,22 +801,22 @@ void accept_connection(int ls, struct session **sess, struct game_info *bank)
         }
 }
 
-void setup_signals(sigset_t *orig_mask)
+void set_sigactions(sigset_t *orig_mask)
 {
-        struct sigaction act;
+        struct sigaction sa;
         sigset_t mask;
-        memset(&act, 0, sizeof(act));
+        sa.sa_handler = SIG_IGN;
+        sigfillset(&sa.sa_mask);
+        sa.sa_flags = 0;
+        sigaction(SIGPIPE, &sa, NULL);
+        sa.sa_handler = &signal_handler;
+        sigaction(SIGTERM, &sa, NULL);
+        sigaction(SIGUSR1, &sa, NULL);
+        sigaction(SIGUSR2, &sa, NULL);
         sigemptyset(&mask);
         sigaddset(&mask, SIGTERM);
         sigaddset(&mask, SIGUSR1);
         sigaddset(&mask, SIGUSR2);
-        act.sa_handler = SIG_IGN;
-        sigaction(SIGPIPE, &act, NULL);
-        act.sa_handler = &signal_handler;
-        act.sa_mask = mask;
-        sigaction(SIGTERM, &act, NULL);
-        sigaction(SIGUSR1, &act, NULL);
-        sigaction(SIGUSR2, &act, NULL);
         sigprocmask(SIG_BLOCK, &mask, orig_mask);
 }
 
@@ -837,7 +827,7 @@ void mainloop(int ls, int count)
         int res, max_d;
         fd_set readfds;
         sigset_t mask;
-        setup_signals(&mask);
+        set_sigactions(&mask);
         init_game(&bank, count);
         for (;;) {
                 FD_ZERO(&readfds);
@@ -854,15 +844,15 @@ void mainloop(int ls, int count)
                                 perror("pselect");
                                 exit(1);
                         }
-                        if (server_state == INTERRUPT) {
+                        if (sig_event_flag == sigev_terminate) {
                                 delete_session_list(sess);
                                 break;
                         }
-                        if (server_state == RELOADING) {
+                        if (sig_event_flag == sigev_restart) {
                                 delete_session_list(sess);
                                 sess = NULL;
                                 init_game(&bank, count);
-                                server_state = EXECUTION;
+                                sig_event_flag = sigev_no_events;
                         }
                         continue;
                 }
@@ -911,7 +901,7 @@ int main(int argc, char **argv)
 {
         int ls, count;
         if (argc != 4) {
-                fputs("Usage: server [ip] [port] [player amount]\n", stderr);
+                fputs("Usage: server [ip] [port] [players]\n", stderr);
                 exit(1);
         }
         count = atoi(argv[3]);
